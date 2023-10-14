@@ -2,47 +2,49 @@ namespace Tiptup300.Gamez.State;
 
 public interface IState : IDisposable
 {
+   IState? Parent {get;}
+   IEnumerable<IState>? Children {get;}
+
+   
+
+   public void RemoveChild(IState state)
+   {
+      if(Children is null)
+         throw new Exception();
+
+      this.Children.Remove(state);
+   }
+   
+   public void Dispose()
+   {
+      if(Parent is not null)
+         this.Parent.RemoveChild(this);
+
+      if(Children is not null)
+         _clearChildren();
+
+      base.Dispose();
+   }
+
+   public void ReplaceWith(IState newState)
+   {
+      this.Parent.AddChild(newState);
+      this.Parent.RemoveChild(this);
+      Dispose();
+   }
+
+   private void _clearChildren()
+   {
+      foreach(var x in Children)
+         x.Dispose();
+   }
 }
-public interface IBaseState : IParentState
+public static class StateExtensions 
+{
+}
+public interface IBaseState : IState
 {
    
-}
-public interface IParentState : IState
-{
-   List<IChildState>? Children {get;}
-}
-public interface ChildState : IState
-{
-   public IParentState Parent {get;}
-}
-
-public interface IStateService
-{
-   void AddState(IParentState parentState, IState newState);
-   void RemoveState(IChildState childState);
-   void ReplaceState(IChildState oldState, IState newState);
-}
-public class StateService : IStateService
-{
-   public void AddState(IParentState parentState, IState newState)
-   {
-      parentState.Children.Add(newState);
-   }
-
-   public void RemoveState(IChildState childState)
-   {
-      childState.Parent.Children.Remove(childState);
-      childState.Dispose();
-      childState = null;
-   }
-
-   public void ReplaceState(IChildState oldState, IState newState)
-   {
-      oldState.Parent.Children.Add(newState);
-      oldState.Parent.Children.Remove(oldState);
-      oldState.Dispose();
-      oldState = null;
-   }
 }
 
 ----------------------------
@@ -55,7 +57,7 @@ public struct TickFrame
    public float Delta {get; private set;}
 }
 
--------------------
+//-------------------
 
 namespace Tiptup300.GamezGame.Scenes.LogoScene;
 
@@ -63,7 +65,8 @@ public record LogoSceneStateBuilderRequest
 (
    bool ShowHiddenLogo = false
 );
-public class LogoSceneStateBuilder : StateBuilder<LogoSceneState, LogoSceneStateBuilderRequest>
+public class LogoSceneStateBuilder : MagicService
+   : StateBuilder<LogoSceneState, LogoSceneStateBuilderRequest>
 {
    public LogoSceneState BuildState(LogoSceneStateBuilderRequest request)
    {
@@ -92,7 +95,7 @@ public class LogoSceneStateBuilder : StateBuilder<LogoSceneState, LogoSceneState
    }
 }
 
-public static class LogoSceneAssets
+public class LogoSceneAssets : MagicStateService
 {
    public static Resource<Texture2D> LogoTexture;
    private static const string LOGOTEXTURE_ASSETID 
@@ -102,7 +105,17 @@ public static class LogoSceneAssets
    private static const string BACKGROUNDTEXTURE_ASSETID 
       = "Tiptup300.GamezGame.Assets.LogoScene.BackgroundTexture2D";
 
-   public static void Load(IResourceService resourceService) 
+   private readonly IResourceService _resourceService;
+
+   public LogoSceneAssets
+   (
+      IResourcesService resourcesService
+   )
+   {
+      _resourcesService = resourcesService;
+   }
+
+   public void Load() 
    {
       if(LogoTexture is null || LogoTexture.Disposed)
       {
@@ -119,7 +132,7 @@ public static class LogoSceneAssets
       }
    }
 
-   public static void Unload()
+   public void Unload()
    {
       LogoTexture.Dispose();
       LogoTexture = null;
@@ -130,10 +143,14 @@ public static class LogoSceneAssets
 
 }
 
-
-public struct LogoSceneState : IChildState
+public struct MainMenuSceneState : IState
+{
+   
+}
+public struct LogoSceneState : IState
 {
    public IState Parent {get; private set;}
+   public IState[] Children {get; private set;} = null;
 
    public enum Substate 
    {
@@ -146,26 +163,32 @@ public struct LogoSceneState : IChildState
    public float FadingOut_Opacity {get; set;}
    public MainMenuSceneState FadedOut_MainMenuSceneState {get; set;}
 
+
    public override Dispose()
    {
       Parent = null;
       State = null;
       MovingDown_Position = null;
       FadedOut_MainMenuSceneState = null;
+      
+      base.Dispose();
    }
 }
-public class LogoSceneStateTicker : ISceneStateTicker<LogoSceneState>, IStateRenderer<LogoSceneState>
+public class LogoSceneStateTicker__Service : ISceneStateTicker<LogoSceneState>, IStateRenderer<LogoSceneState>
 {
    private static const TICK_RATE = 1 / 60f;
    private static const RENDER_RATE = TICK_RATE;
 
+   private readonly LogoSceneAssets__StateService _assets;
    private readonly IStateBuilder<MainMenuSceneState, MainMenuSceneStateBuilderRequest> _mainMenuSceneStateBuilder;
 
    public LogoSceneStateTicker
    (
+      LogoSceneAssets__StateService assets,
       IStateBuilder<MainMenuSceneState, MainMenuSceneStateBuilderRequest> mainMenuSceneStateBuilder
    )
    {
+      _assets = assets;
       _mainMenuSceneStateBuilder = mainMenuSceneStateBuilder;
    }
 
@@ -197,12 +220,12 @@ public class LogoSceneStateTicker : ISceneStateTicker<LogoSceneState>, IStateRen
             {
                state.FadingOut_Opacity = 0f;
                state.Substate = LogoSceneState.State.FadedOut;
-               state.FadedOut_MainMenuSceneState = _mainMenuSceneStateBuilder.BuildState(
+
+               FadedOut_MainMenuSceneState = _mainMenuSceneStateBuilder.BuildState(
                   new MainMenuSceneStateBuilderRequest()
                );
-               _stateService.AddState(
-                  parentState: state.Parent,
-                  newState: state.FadedOut_MainMenuSceneState
+               state.AddSiblingState(
+                  FadedOut_MainMenuSceneState
                );
                LogoSceneAssets.Unload();
             }
@@ -210,6 +233,7 @@ public class LogoSceneStateTicker : ISceneStateTicker<LogoSceneState>, IStateRen
          case LogoSceneState.State.FadedOut:
             if(state.FadedOut_MainMenuSceneState.IsLoaded)
             {
+               state.Remove();
                _stateService.RemoveState(state);
             }
             break;
@@ -221,7 +245,7 @@ public class LogoSceneStateTicker : ISceneStateTicker<LogoSceneState>, IStateRen
       _renderService.RenderTexture(LogoSceneAssets.LogoTexture, )
    }
 }
-
+/*
 -------------------------
 
 -----------------------
@@ -276,3 +300,4 @@ _sceneService.QueueScene
 
 
 
+*/
